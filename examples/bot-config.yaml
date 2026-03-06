@@ -1,0 +1,73 @@
+access_control:
+  state_file: "/data/access-control.json"
+  admin_chat_ids: []
+  allowed_chat_ids: []
+
+telegram:
+  bot_token: null
+  parse_mode: "HTML"
+  disable_notification: false
+  custom_promql:
+    enabled: true
+    command_name: "query"
+    default_type: "value"
+
+prometheus:
+  base_url: "http://prometheus:9090"
+  request_timeout_seconds: 10
+  verify_ssl: true
+
+scheduler:
+  enabled: true
+  poll_interval_seconds: 15
+
+visualizer:
+  default_time_period: "1h"
+  default_step: "60s"
+  figure_width: 10
+  figure_height: 6
+  dpi: 150
+  style: "default"
+
+metric_publishers:
+  - name: "Current random metric"
+    metric_name: "current_random_metric"
+    cron_expression: "*/5 * * * *"
+    available_via_command: true
+    command_name: "current"
+    type: "value"
+    promql_query: "example_random_metric"
+
+  - name: "Random metric over time"
+    metric_name: "random_metric_over_time"
+    cron_expression: "*/15 * * * *"
+    available_via_command: true
+    command_name: "random_graph"
+    type: "graph"
+    promql_query: "example_random_metric"
+    time_period: "1h"
+
+  - name: "Stacked system metrics"
+    metric_name: "stacked_system_metrics"
+    available_via_command: true
+    command_name: "system_graph"
+    type: "graph"
+    time_period: "1h"
+    promql_queries:
+      - name: "Random metric"
+        promql_query: "example_random_metric"
+      - name: "Random metric x2"
+        promql_query: "example_random_metric * 2"
+
+  - name: "Metric split by job"
+    metric_name: "metric_split_by_job"
+    cron_expression: "0 * * * *"
+    type: "piechart"
+    promql_query: "sum by (job) (example_random_metric)"
+
+  - name: "On-demand health status"
+    metric_name: "health_status"
+    available_via_command: true
+    command_name: "status"
+    type: "value"
+    promql_query: "up"

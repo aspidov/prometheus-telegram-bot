@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  telegram-bot:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: prometheus-telegram-bot
+    depends_on:
+      - prometheus
+    volumes:
+      - ./bot-config.yaml:/config/bot-config.yaml:ro
+      - ./data:/data
+    command: ["--config", "/config/bot-config.yaml"]
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+
+  pushgateway:
+    image: prom/pushgateway:latest
+    container_name: pushgateway
+    ports:
+      - "9091:9091"
+    restart: unless-stopped
+
+  data-generator:
+    image: buildpack-deps:curl
+    container_name: data-generator
+    depends_on:
+      - pushgateway
+    restart: unless-stopped
+    command: >
+      /bin/bash -c "
+      echo 'Starting to push data to Pushgateway...';
+      while true; do
+        VAL=$$(( RANDOM % 100 ));
+        echo \"Pushing value: $$VAL to Pushgateway\";
+        echo \"example_random_metric{environment=\\\"testing\\\"} $$VAL\" | curl --silent --show-error --data-binary @- http://pushgateway:9091/metrics/job/my_example_job;
+        sleep 5;
+      done
+      "
