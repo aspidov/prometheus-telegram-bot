@@ -1,5 +1,6 @@
 # Prometheus Telegram Bot
 
+[![GitHub](https://img.shields.io/badge/GitHub-andreybolut%2Fprometheus--telegram--bot-181717?logo=github&logoColor=white)](https://github.com/andreybolut/prometheus-telegram-bot)
 [![Docker Hub](https://img.shields.io/badge/Docker%20Hub-andreybolut%2Fprometheus--telegram--bot-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/andreybolut/prometheus-telegram-bot)
 
 Telegram bot for scheduled and on-demand Prometheus statistics.
