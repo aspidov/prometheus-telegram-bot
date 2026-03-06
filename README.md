@@ -148,7 +148,7 @@ docker run -d \
 	--name prometheus-telegram-bot \
 	-v $(pwd)/config.yaml:/config/config.yaml:ro \
 	-v $(pwd)/data:/data \
-	ghcr.io/bolut/prometheus-telegram-bot:latest \
+	andreybolut/prometheus-telegram-bot:latest \
 	--config /config/config.yaml
 ```
 
