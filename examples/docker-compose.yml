@@ -2,15 +2,17 @@ version: '3.8'
 
 services:
   telegram-bot:
-    build:
-      context: ..
-      dockerfile: Dockerfile
+    image: andreybolut/prometheus-telegram-bot:latest
     container_name: prometheus-telegram-bot
     depends_on:
       - prometheus
     volumes:
       - ./bot-config.yaml:/config/bot-config.yaml:ro
       - ./data:/data
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 100m
     command: ["--config", "/config/bot-config.yaml"]
     restart: unless-stopped
 
