@@ -5,6 +5,8 @@
 
 Telegram bot for scheduled and on-demand Prometheus statistics.
 
+This project started from a simple real-world problem: sometimes the server I want to monitor is not directly reachable from the Internet, and sometimes it does not even have a public IP address. Still, I need a quick way to understand whether it is healthy, overloaded, or already failing. Instead of opening dashboards all the time or exposing internal services, I built a Telegram bot that can query Prometheus and send the current status, charts, and scheduled updates straight to chat. That way, monitoring becomes available anywhere Telegram is available.
+
 ## Example chart 📈
 
 ![Example chart](docs/example_chart.png)
