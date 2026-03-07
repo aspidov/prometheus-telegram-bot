@@ -116,9 +116,15 @@ class Visualizer:
 
 
 def _series_label(series: PrometheusSeries, index: int) -> str:
-    if not series.labels:
+    labels = {key: value for key, value in series.labels.items() if key != "__name__"}
+    if not labels:
         return f"Series {index}"
-    return ", ".join(f"{key}={value}" for key, value in sorted(series.labels.items()))
+    
+    label_str = ", ".join(f"{key}={value}" for key, value in sorted(labels.items()))
+    # Matplotlib ignores labels starting with an underscore
+    if label_str.startswith("_"):
+        label_str = label_str.lstrip("_")
+    return label_str
 
 
 def _build_caption(publisher: MetricPublisher) -> str:
