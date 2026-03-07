@@ -5,6 +5,10 @@
 
 Telegram bot for scheduled and on-demand Prometheus statistics.
 
+## Example chart 📈
+
+![Example chart](docs/example_chart.png)
+
 It supports:
 - predefined metric commands in Telegram
 - scheduled publishing with cron expressions
