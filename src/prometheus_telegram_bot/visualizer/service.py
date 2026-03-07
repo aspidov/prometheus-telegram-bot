@@ -67,7 +67,7 @@ class Visualizer:
             axis.set_xlabel("Time")
             axis.set_ylabel("Value")
             axis.grid(True, alpha=0.3)
-            if len(result.series) > 1:
+            if len(result.series) > 1 or any(series.labels for series in result.series):
                 axis.legend()
             figure.autofmt_xdate()
 
@@ -100,6 +100,8 @@ class Visualizer:
             axis.pie(sizes, labels=labels, autopct="%1.1f%%", startangle=90)
             axis.set_title(publisher.name)
             axis.axis("equal")
+            if len(result.series) > 1 or any(series.labels for series in result.series):
+                axis.legend(loc="upper left")
 
             buffer = BytesIO()
             figure.tight_layout()
