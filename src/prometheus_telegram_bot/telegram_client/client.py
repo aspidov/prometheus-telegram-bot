@@ -15,6 +15,38 @@ from prometheus_telegram_bot.visualizer import VisualizationResult
 
 logger = logging.getLogger(__name__)
 
+_PHOTO_CAPTION_LIMIT = 1024
+_TEXT_MESSAGE_LIMIT = 4096
+_MEDIA_GROUP_MAX = 10
+
+
+def _split_text(text: str, limit: int) -> list[str]:
+    """Split *text* into chunks of at most *limit* characters.
+
+    Splits on double-newline paragraph boundaries when possible so that
+    individual publisher captions stay intact.
+    """
+    if len(text) <= limit:
+        return [text]
+
+    chunks: list[str] = []
+    current = ""
+    for paragraph in text.split("\n\n"):
+        candidate = f"{current}\n\n{paragraph}" if current else paragraph
+        if len(candidate) <= limit:
+            current = candidate
+        else:
+            if current:
+                chunks.append(current)
+            # If a single paragraph exceeds the limit, hard-split it.
+            while len(paragraph) > limit:
+                chunks.append(paragraph[:limit])
+                paragraph = paragraph[limit:]
+            current = paragraph
+    if current:
+        chunks.append(current)
+    return chunks
+
 
 TelegramCommandHandler = Callable[
     [Update, ContextTypes.DEFAULT_TYPE],
@@ -122,67 +154,119 @@ class TelegramClient:
     ) -> list[Message]:
         if not visualizations:
             return []
-            
-        # Extract images
-        images = []
-        for i, viz in enumerate(visualizations):
-            if viz.image_bytes is not None:
+
+        image_vizs = [v for v in visualizations if v.image_bytes is not None]
+        text_vizs = [v for v in visualizations if v.image_bytes is None]
+
+        messages: list[Message] = []
+
+        # --- Handle image visualizations ---
+        if image_vizs:
+            if len(image_vizs) == 1:
+                viz = image_vizs[0]
                 image = BytesIO(viz.image_bytes)
                 image.name = viz.filename
                 image.seek(0)
-                images.append(image)
-        
-        # Combine all captions
-        combined_caption = "\n\n".join(viz.caption for viz in visualizations)
-        rendered_caption = self._render_text(combined_caption, allow_markup=any(v.preformatted for v in visualizations))
-        
-        # If there are no images, send text
-        if not images:
-            logger.info("Sending multi-visualization as text to chat_id=%s", chat_id)
-            message = await self._application.bot.send_message(
-                chat_id=chat_id,
-                text=rendered_caption,
-                parse_mode=self._config.parse_mode,
-                disable_notification=self._config.disable_notification,
-                message_thread_id=self._config.message_thread_id,
-            )
-            return [message]
-            
-        # If only one image, use send_photo
-        if len(images) == 1:
-            logger.info("Sending multi-visualization with 1 image to chat_id=%s", chat_id)
-            message = await self._application.bot.send_photo(
-                chat_id=chat_id,
-                photo=images[0],
-                caption=rendered_caption,
-                parse_mode=self._config.parse_mode,
-                disable_notification=self._config.disable_notification,
-                message_thread_id=self._config.message_thread_id,
-            )
-            return [message]
-            
-        # Multiple images, use send_media_group
-        logger.info("Sending multi-visualization with %s images to chat_id=%s", len(images), chat_id)
-        media_group = []
-        for i, image in enumerate(images):
-            # Only the first photo gets the caption in a media group to avoid duplication
-            caption = rendered_caption if i == 0 else ""
-            parse_mode = self._config.parse_mode if i == 0 else None
-            
-            media_group.append(
-                InputMediaPhoto(
-                    media=image,
-                    caption=caption,
-                    parse_mode=parse_mode,
-                )
-            )
+                caption = self._render_text(viz.caption, allow_markup=viz.preformatted)
 
-        return await self._application.bot.send_media_group(
-            chat_id=chat_id,
-            media=media_group,
-            disable_notification=self._config.disable_notification,
-            message_thread_id=self._config.message_thread_id,
-        )
+                if len(caption) > _PHOTO_CAPTION_LIMIT:
+                    logger.info(
+                        "Caption too long (%s chars) for single photo, sending photo + text to chat_id=%s",
+                        len(caption), chat_id,
+                    )
+                    msg = await self._application.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=image,
+                        disable_notification=self._config.disable_notification,
+                        message_thread_id=self._config.message_thread_id,
+                    )
+                    messages.append(msg)
+                    for chunk in _split_text(caption, _TEXT_MESSAGE_LIMIT):
+                        msg = await self._application.bot.send_message(
+                            chat_id=chat_id,
+                            text=chunk,
+                            parse_mode=self._config.parse_mode,
+                            disable_notification=self._config.disable_notification,
+                            message_thread_id=self._config.message_thread_id,
+                        )
+                        messages.append(msg)
+                else:
+                    logger.info("Sending multi-visualization with 1 image to chat_id=%s", chat_id)
+                    msg = await self._application.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=image,
+                        caption=caption,
+                        parse_mode=self._config.parse_mode,
+                        disable_notification=self._config.disable_notification,
+                        message_thread_id=self._config.message_thread_id,
+                    )
+                    messages.append(msg)
+            else:
+                # Multiple images → send_media_group (max 10 per group).
+                # Each photo gets its OWN caption; overflow captions sent as text.
+                for batch_start in range(0, len(image_vizs), _MEDIA_GROUP_MAX):
+                    batch = image_vizs[batch_start : batch_start + _MEDIA_GROUP_MAX]
+                    media_group: list[InputMediaPhoto] = []
+                    overflow_captions: list[str] = []
+
+                    for viz in batch:
+                        image = BytesIO(viz.image_bytes)
+                        image.name = viz.filename
+                        image.seek(0)
+                        caption = self._render_text(viz.caption, allow_markup=viz.preformatted)
+
+                        if len(caption) > _PHOTO_CAPTION_LIMIT:
+                            overflow_captions.append(caption)
+                            media_group.append(InputMediaPhoto(media=image))
+                        else:
+                            media_group.append(
+                                InputMediaPhoto(
+                                    media=image,
+                                    caption=caption,
+                                    parse_mode=self._config.parse_mode,
+                                )
+                            )
+
+                    logger.info(
+                        "Sending media group of %s images to chat_id=%s", len(media_group), chat_id,
+                    )
+                    msgs = await self._application.bot.send_media_group(
+                        chat_id=chat_id,
+                        media=media_group,
+                        disable_notification=self._config.disable_notification,
+                        message_thread_id=self._config.message_thread_id,
+                    )
+                    messages.extend(msgs)
+
+                    if overflow_captions:
+                        combined = "\n\n".join(overflow_captions)
+                        for chunk in _split_text(combined, _TEXT_MESSAGE_LIMIT):
+                            msg = await self._application.bot.send_message(
+                                chat_id=chat_id,
+                                text=chunk,
+                                parse_mode=self._config.parse_mode,
+                                disable_notification=self._config.disable_notification,
+                                message_thread_id=self._config.message_thread_id,
+                            )
+                            messages.append(msg)
+
+        # --- Handle text-only visualizations ---
+        if text_vizs:
+            combined_text = "\n\n".join(
+                self._render_text(v.caption, allow_markup=v.preformatted) for v in text_vizs
+            )
+            for chunk in _split_text(combined_text, _TEXT_MESSAGE_LIMIT):
+                logger.info("Sending text visualization to chat_id=%s", chat_id)
+                msg = await self._application.bot.send_message(
+                    chat_id=chat_id,
+                    text=chunk,
+                    parse_mode=self._config.parse_mode,
+                    disable_notification=self._config.disable_notification,
+                    message_thread_id=self._config.message_thread_id,
+                )
+                messages.append(msg)
+
+        return messages
 
     def _render_text(self, text: str, *, allow_markup: bool = False) -> str:
         if self._config.parse_mode == "HTML" and not allow_markup:
