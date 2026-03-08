@@ -62,34 +62,43 @@ class SchedulerService:
         logger.info("Scheduler loop started")
         while not stop_event.is_set():
             now = datetime.now(tz=UTC)
+            jobs_to_run: list[_ScheduledPublisher] = []
+            
             for job in self._jobs:
                 if job.next_run <= now:
-                    allowed_chat_ids = self._access_control.allowed_chat_ids()
+                    jobs_to_run.append(job)
+                    job.next_run = job.iterator.get_next(datetime)
+                    
+            if jobs_to_run:
+                allowed_chat_ids = self._access_control.allowed_chat_ids()
+                if allowed_chat_ids:
                     logger.info(
-                        "Running scheduled publisher=%s for %s allowed chat(s)",
-                        job.publisher.metric_name,
+                        "Running %s scheduled publishers for %s allowed chat(s)",
+                        len(jobs_to_run),
                         len(allowed_chat_ids),
                     )
+                    publishers = [job.publisher for job in jobs_to_run]
                     try:
-                        if allowed_chat_ids:
-                            await self._publisher_service.broadcast(
-                                job.publisher,
-                                allowed_chat_ids,
-                            )
+                        await self._publisher_service.broadcast_multiple(
+                            publishers,
+                            allowed_chat_ids,
+                        )
                     except Exception as exc:
-                        logger.exception("Scheduled publish failed for publisher=%s", job.publisher.metric_name)
+                        publisher_names = ", ".join(p.metric_name for p in publishers)
+                        logger.exception("Scheduled publish failed for publishers=%s", publisher_names)
                         for admin_chat_id in self._access_control.allowed_chat_ids():
                             if self._access_control.is_admin(admin_chat_id):
                                 await self._publisher_service.telegram.send_text(
-                                    f"Failed to publish {job.publisher.name}: {exc}",
+                                    f"Failed to publish {publisher_names}: {exc}",
                                     chat_id=admin_chat_id,
                                 )
-                    job.next_run = job.iterator.get_next(datetime)
-                    logger.info(
-                        "Next run for publisher=%s scheduled at %s",
-                        job.publisher.metric_name,
-                        job.next_run.isoformat(),
-                    )
+                                
+            for job in jobs_to_run:
+                logger.info(
+                    "Next run for publisher=%s scheduled at %s",
+                    job.publisher.metric_name,
+                    job.next_run.isoformat(),
+                )
 
             next_due = min(job.next_run for job in self._jobs)
             timeout_seconds = min(

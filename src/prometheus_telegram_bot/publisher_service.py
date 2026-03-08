@@ -47,6 +47,49 @@ class PublisherService:
         for chat_id in chat_ids:
             await self.telegram.send_visualization(visualization, chat_id=chat_id)
 
+    async def broadcast_multiple(self, publishers: list[MetricPublisher], chat_ids: list[int | str]) -> None:
+        if not publishers:
+            return
+            
+        logger.info("Broadcasting %s publishers to %s chat(s)", len(publishers), len(chat_ids))
+        
+        visualizations = []
+        for publisher in publishers:
+            result = await self._query_for_publisher(publisher)
+            
+            # Extract last values for each metric text
+            last_values_text = []
+            for series in result.series:
+                latest_value = series.latest_value
+                labels_str = ", ".join(f"{k}={v}" for k, v in series.labels.items() if k != "query")
+                last_values_text.append(f"  {labels_str}: {latest_value}" if labels_str else f"  Value: {latest_value}")
+                
+            visualization = self.visualizer.render(publisher, result)
+            
+            # Incorporate last values into the caption
+            if last_values_text:
+                if self.telegram._config.parse_mode == "HTML":
+                    last_vals_str = "\n".join(last_values_text)
+                    visualization = VisualizationResult(
+                        caption=f"{visualization.caption}\n\n<b>Last values:</b>\n<pre>{last_vals_str}</pre>",
+                        image_bytes=visualization.image_bytes,
+                        filename=visualization.filename,
+                        preformatted=True
+                    )
+                else:
+                    last_vals_str = "\n".join(last_values_text)
+                    visualization = VisualizationResult(
+                        caption=f"{visualization.caption}\n\n*Last values:*\n```\n{last_vals_str}\n```",
+                        image_bytes=visualization.image_bytes,
+                        filename=visualization.filename,
+                        preformatted=True
+                    )
+            
+            visualizations.append(visualization)
+            
+        for chat_id in chat_ids:
+            await self.telegram.send_visualizations(visualizations, chat_id=chat_id)
+
     async def run_custom_query(
         self,
         promql_query: str,

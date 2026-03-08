@@ -31,9 +31,19 @@ class FakePrometheusClient:
 @dataclass
 class FakeTelegramClient:
     sent: list[tuple[int | str, VisualizationResult]] = field(default_factory=list)
+    sent_multiple: list[tuple[int | str, list[VisualizationResult]]] = field(default_factory=list)
+    parse_mode: str | None = "HTML"
+
+    @property
+    def _config(self) -> object:
+        # Return a simple namespace with parse_mode for `broadcast_multiple` checks
+        return type("Cfg", (), {"parse_mode": self.parse_mode})()
 
     async def send_visualization(self, visualization: VisualizationResult, *, chat_id: int | str) -> None:
         self.sent.append((chat_id, visualization))
+
+    async def send_visualizations(self, visualizations: list[VisualizationResult], *, chat_id: int | str) -> None:
+        self.sent_multiple.append((chat_id, list(visualizations)))
 
 
 def test_resolve_metric_queries_uses_single_query_as_default() -> None:
@@ -241,3 +251,181 @@ async def test_run_custom_query_uses_default_time_period_in_published_caption() 
     assert visualization.caption == "📈 Custom query\n• Query: up\n• Lookback: 30m"
     assert visualization.filename == "custom_query_graph.png"
     assert visualization.image_bytes is not None
+
+
+@pytest.mark.anyio
+async def test_broadcast_multiple_sends_all_publishers_as_one_message_per_chat() -> None:
+    """All publishers due at the same time are sent as a single grouped message per chat."""
+    timestamp = datetime(2026, 3, 6, tzinfo=UTC)
+    publisher_a = MetricPublisher(
+        name="CPU Usage",
+        metric_name="cpu",
+        cron_expression="*/5 * * * *",
+        type=MetricPublisherType.VALUE,
+        promql_query="cpu_usage",
+    )
+    publisher_b = MetricPublisher(
+        name="Memory Usage",
+        metric_name="memory",
+        cron_expression="*/5 * * * *",
+        type=MetricPublisherType.VALUE,
+        promql_query="memory_usage",
+    )
+    prometheus = FakePrometheusClient(
+        instant_results=[
+            PrometheusQueryResult(
+                result_type="vector",
+                series=[
+                    PrometheusSeries(
+                        labels={"instance": "node-1"},
+                        samples=[
+                            PrometheusSample(labels={"instance": "node-1"}, timestamp=timestamp, value=55.0)
+                        ],
+                    )
+                ],
+            ),
+            PrometheusQueryResult(
+                result_type="vector",
+                series=[
+                    PrometheusSeries(
+                        labels={"instance": "node-1"},
+                        samples=[
+                            PrometheusSample(labels={"instance": "node-1"}, timestamp=timestamp, value=70.0)
+                        ],
+                    )
+                ],
+            ),
+        ]
+    )
+    telegram = FakeTelegramClient(parse_mode="HTML")
+    service = PublisherService(
+        prometheus=prometheus,
+        visualizer=Visualizer(VisualizerConfig()),
+        visualizer_config=VisualizerConfig(),
+        telegram=telegram,
+    )
+
+    await service.broadcast_multiple([publisher_a, publisher_b], chat_ids=[1001, 1002])
+
+    # send_visualization should NOT have been called – only send_visualizations
+    assert telegram.sent == []
+
+    # Exactly one call per chat_id to send_visualizations
+    assert len(telegram.sent_multiple) == 2
+    chat_ids_called = [chat_id for chat_id, _ in telegram.sent_multiple]
+    assert chat_ids_called == [1001, 1002]
+
+    # Both chats receive the exact same list of two visualizations
+    vizs_1001 = telegram.sent_multiple[0][1]
+    vizs_1002 = telegram.sent_multiple[1][1]
+    assert len(vizs_1001) == 2
+    assert vizs_1001 == vizs_1002
+
+    # Each visualization caption starts with the corresponding publisher name
+    assert "CPU Usage" in vizs_1001[0].caption
+    assert "Memory Usage" in vizs_1001[1].caption
+
+
+@pytest.mark.anyio
+async def test_broadcast_multiple_does_nothing_when_publishers_list_is_empty() -> None:
+    telegram = FakeTelegramClient()
+    service = PublisherService(
+        prometheus=FakePrometheusClient(),
+        visualizer=Visualizer(VisualizerConfig()),
+        visualizer_config=VisualizerConfig(),
+        telegram=telegram,
+    )
+
+    await service.broadcast_multiple([], chat_ids=[1001, 1002])
+
+    assert telegram.sent == []
+    assert telegram.sent_multiple == []
+
+
+@pytest.mark.anyio
+async def test_broadcast_multiple_appends_last_values_to_caption_html() -> None:
+    """When parse_mode is HTML, last values are appended with HTML tags."""
+    timestamp = datetime(2026, 3, 6, tzinfo=UTC)
+    publisher = MetricPublisher(
+        name="Disk IO",
+        metric_name="disk_io",
+        cron_expression="*/5 * * * *",
+        type=MetricPublisherType.VALUE,
+        promql_query="disk_io_bytes",
+    )
+    prometheus = FakePrometheusClient(
+        instant_results=[
+            PrometheusQueryResult(
+                result_type="vector",
+                series=[
+                    PrometheusSeries(
+                        labels={"device": "sda"},
+                        samples=[
+                            PrometheusSample(labels={"device": "sda"}, timestamp=timestamp, value=1024.0)
+                        ],
+                    )
+                ],
+            )
+        ]
+    )
+    telegram = FakeTelegramClient(parse_mode="HTML")
+    service = PublisherService(
+        prometheus=prometheus,
+        visualizer=Visualizer(VisualizerConfig()),
+        visualizer_config=VisualizerConfig(),
+        telegram=telegram,
+    )
+
+    await service.broadcast_multiple([publisher], chat_ids=[42])
+
+    assert len(telegram.sent_multiple) == 1
+    _, vizs = telegram.sent_multiple[0]
+    assert len(vizs) == 1
+    caption = vizs[0].caption
+    assert "<b>Last values:</b>" in caption
+    assert "<pre>" in caption
+    assert "device=sda" in caption
+
+
+@pytest.mark.anyio
+async def test_broadcast_multiple_appends_last_values_to_caption_markdown() -> None:
+    """When parse_mode is not HTML, last values are appended with Markdown syntax."""
+    timestamp = datetime(2026, 3, 6, tzinfo=UTC)
+    publisher = MetricPublisher(
+        name="Disk IO",
+        metric_name="disk_io",
+        cron_expression="*/5 * * * *",
+        type=MetricPublisherType.VALUE,
+        promql_query="disk_io_bytes",
+    )
+    prometheus = FakePrometheusClient(
+        instant_results=[
+            PrometheusQueryResult(
+                result_type="vector",
+                series=[
+                    PrometheusSeries(
+                        labels={"device": "sda"},
+                        samples=[
+                            PrometheusSample(labels={"device": "sda"}, timestamp=timestamp, value=1024.0)
+                        ],
+                    )
+                ],
+            )
+        ]
+    )
+    telegram = FakeTelegramClient(parse_mode="MarkdownV2")
+    service = PublisherService(
+        prometheus=prometheus,
+        visualizer=Visualizer(VisualizerConfig()),
+        visualizer_config=VisualizerConfig(),
+        telegram=telegram,
+    )
+
+    await service.broadcast_multiple([publisher], chat_ids=[42])
+
+    assert len(telegram.sent_multiple) == 1
+    _, vizs = telegram.sent_multiple[0]
+    caption = vizs[0].caption
+    assert "*Last values:*" in caption
+    assert "```" in caption
+    assert "device=sda" in caption
